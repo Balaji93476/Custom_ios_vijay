@@ -1,5 +1,11 @@
 import type { WalnutAndroidContext } from './walnut';
-import Tesseract from 'tesseract.js';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
+
+const execFileAsync = promisify(execFile);
 
 /** @walnut_method
  * name: Click By OCR Text
@@ -29,8 +35,8 @@ export async function clickByOCRText(ctx: WalnutAndroidContext) {
     throw new Error('Failed to capture Android device screenshot.');
   }
 
-  // ── 3. Run OCR via tesseract.js ──────────────────────────────────────────
-  const ocrResults = await detectTextFromScreen(screenshotBase64);
+  // ── 3. Run OCR via system tesseract CLI ──────────────────────────────────
+  const ocrResults = await detectTextFromScreen(screenshotBase64, ctx);
 
   if (ocrResults.length === 0) {
     throw new Error('OCR could not detect any text on the current Android screen.');
@@ -119,45 +125,93 @@ interface OCRTextResult {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // detectTextFromScreen — reusable OCR service
-// Returns every word-level result with its bounding box from a base64 PNG/JPEG.
+//
+// Shells out to the system `tesseract` CLI with `tsv` output format.
+// TSV columns (0-indexed):
+//   5 = left, 6 = top, 7 = width, 8 = height, 11 = text
+// Uses only Node.js built-ins (fs, os, path, child_process) — no npm packages,
+// so esbuild can always bundle this without needing node_modules.
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function detectTextFromScreen(
-  screenshotBase64: string
+  screenshotBase64: string,
+  ctx: WalnutAndroidContext
 ): Promise<OCRTextResult[]> {
-  // Appium screenshots are already valid PNGs — decode base64 directly to Buffer.
-  // No image-conversion library needed.
-  const imageBuffer: Buffer = Buffer.from(screenshotBase64, 'base64');
+  const tmpDir = os.tmpdir();
+  const imgPath = path.join(tmpDir, `walnut_ocr_${Date.now()}.png`);
+  // tesseract appends the extension itself, so we give it a stem
+  const tsvStem = path.join(tmpDir, `walnut_ocr_${Date.now()}_out`);
+  const tsvPath = tsvStem + '.tsv';
 
-  // Run Tesseract with word-level data.
-  // Cast result.data to `any` to access the `words` array — the tesseract.js
-  // declarations type it as `Page` which may not expose `words` in all versions.
-  const result = await Tesseract.recognize(imageBuffer, 'eng', {
-    logger: () => {}, // suppress progress noise
-  });
+  try {
+    // Write screenshot PNG to a temp file
+    fs.writeFileSync(imgPath, Buffer.from(screenshotBase64, 'base64'));
 
-  const data = (result as any).data as any;
-  const words: any[] = data.words ?? [];
+    // Run: tesseract <imgPath> <tsvStem> tsv
+    try {
+      await execFileAsync('tesseract', [imgPath, tsvStem, 'tsv']);
+    } catch (err: any) {
+      throw new Error(
+        `Tesseract CLI failed. Make sure tesseract is installed and on PATH.\n` +
+          (err?.message ?? String(err))
+      );
+    }
 
-  const ocrResults: OCRTextResult[] = [];
+    // Read the TSV output
+    if (!fs.existsSync(tsvPath)) {
+      throw new Error(`Tesseract did not produce output file: ${tsvPath}`);
+    }
 
-  for (const word of words) {
-    const rawText = String(word.text ?? '').trim();
-    if (!rawText) continue;
+    const tsv = fs.readFileSync(tsvPath, 'utf8');
+    ctx.log(`Tesseract TSV output received (${tsv.split('\n').length} lines)`);
 
-    const { x0, y0, x1, y1 } = word.bbox as {
-      x0: number; y0: number; x1: number; y1: number;
-    };
-    ocrResults.push({
-      text: rawText,
-      x: x0,
-      y: y0,
-      width: x1 - x0,
-      height: y1 - y0,
-    });
+    return parseTsv(tsv);
+  } finally {
+    // Clean up temp files
+    for (const f of [imgPath, tsvPath]) {
+      try { fs.unlinkSync(f); } catch { /* ignore */ }
+    }
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// parseTsv — extract word-level bounding boxes from tesseract TSV output
+//
+// TSV header:
+//   level page_num block_num par_num line_num word_num left top width height conf text
+//   0     1        2         3       4        5        6    7   8     9      10   11
+// level=5 rows are individual words.
+// ─────────────────────────────────────────────────────────────────────────────
+
+function parseTsv(tsv: string): OCRTextResult[] {
+  const results: OCRTextResult[] = [];
+  const lines = tsv.split('\n');
+
+  // Skip the header row
+  for (let i = 1; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (!line) continue;
+
+    const cols = line.split('\t');
+    if (cols.length < 12) continue;
+
+    const level = parseInt(cols[0], 10);
+    if (level !== 5) continue; // level 5 = word
+
+    const left   = parseInt(cols[6],  10);
+    const top    = parseInt(cols[7],  10);
+    const width  = parseInt(cols[8],  10);
+    const height = parseInt(cols[9],  10);
+    const conf   = parseFloat(cols[10]);
+    const word   = cols[11].trim();
+
+    // Skip empty words or words with zero confidence
+    if (!word || conf < 0) continue;
+
+    results.push({ text: word, x: left, y: top, width, height });
   }
 
-  return ocrResults;
+  return results;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
