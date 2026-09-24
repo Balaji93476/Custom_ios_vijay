@@ -232,5 +232,66 @@ export interface WalnutApiContext extends WalnutBaseContext {
 
 }
 
+/** Android device automation via UIAutomator2 (platform: 'android') */
+export interface WalnutAndroidContext extends WalnutBaseContext {
+  readonly platform: 'android';
+
+  /** The linked object's name — present when needsLocator: true */
+  readonly objectDescription?: string;
+
+  /** Invoke a low-level Appium tool by name (e.g. getScreenshot, tapByCoordinates) */
+  callTool(name: string, args: Record<string, any>): Promise<any>;
+
+  // --- Read (acts on the step's linked object) ---
+  getText(): Promise<string>;
+  getAttribute(attribute: string): Promise<string>;
+
+  // --- Interact (acts on the step's linked object) ---
+  click(): Promise<void>;
+  tap(): Promise<void>;
+  type(text: string): Promise<void>;
+  clear(): Promise<void>;
+  longPress(): Promise<void>;
+
+  // --- Ad-hoc selector variants ---
+  getTextBy(selector: AndroidSelector): Promise<string>;
+  getAttributeBy(selector: AndroidSelector, attribute: string): Promise<string>;
+  clickBy(selector: AndroidSelector): Promise<void>;
+  tapBy(selector: AndroidSelector): Promise<void>;
+  typeBy(selector: AndroidSelector, text: string): Promise<void>;
+  clearBy(selector: AndroidSelector): Promise<void>;
+  isVisibleBy(selector: AndroidSelector): Promise<boolean>;
+
+  // --- Query ---
+  isVisible(): Promise<boolean>;
+
+  // --- Navigation ---
+  back(): Promise<void>;
+  home(): Promise<void>;
+  pressKey(keyName: string): Promise<void>;
+  hideKeyboard(): Promise<void>;
+  openNotifications(): Promise<void>;
+
+  // --- Scroll ---
+  swipe(direction: 'up' | 'down' | 'left' | 'right'): Promise<void>;
+  scrollToText(text: string): Promise<void>;
+  clickByText(text: string): Promise<void>;
+
+  // --- App ---
+  startApp(packageName: string): Promise<void>;
+  closeApp(packageName: string): Promise<void>;
+  resetApp(packageName: string): Promise<void>;
+}
+
+/** Ad-hoc Android element selector — provide at least one field */
+export interface AndroidSelector {
+  resourceId?: string;
+  text?: string;
+  contentDesc?: string;
+  hint?: string;
+  testTag?: string;
+  xpath?: string;
+}
+
 /** Context passed to custom method functions */
-export type WalnutContext = WalnutWebContext | WalnutApiContext;
+export type WalnutContext = WalnutWebContext | WalnutApiContext | WalnutAndroidContext;
